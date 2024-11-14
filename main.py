@@ -3,6 +3,7 @@ import asyncio
 import aiofiles
 import os
 import uuid
+import psutil
 from tqdm import tqdm
 import time
 import signal
@@ -28,6 +29,13 @@ USER_AGENTS = [
 import random
 USER_AGENT = random.choice(USER_AGENTS)
 
+# メモリの最大許容量（300MB未満）
+MAX_MEMORY_SIZE = 300 * 1024 * 1024  # 300MB
+
+# メモリの使用量をチェックする関数
+def get_available_memory():
+    return psutil.virtual_memory().available
+
 async def download_file(session, url, file_path, progress_bar):
     global total_bytes_downloaded
     try:
@@ -39,15 +47,43 @@ async def download_file(session, url, file_path, progress_bar):
         
         async with session.get(url, timeout=timeout, headers=headers) as response:
             if response.status == 200:
-                async with aiofiles.open(file_path, 'wb') as f:
-                    content = await response.read()
-                    await f.write(content)
-                    total_bytes_downloaded += len(content)
-                    progress_bar.update(1)
+                # ダウンロードするファイルのサイズ
+                content = await response.read()
+                file_size = len(content)
+                
+                # 300MB未満の場合メモリに保存
+                if file_size < MAX_MEMORY_SIZE:
+                    available_memory = get_available_memory()
+                    if available_memory > file_size:
+                        # メモリに一時保管する場合
+                        progress_bar.set_postfix({"status": "in-memory"})
+                        total_bytes_downloaded += file_size
+                        progress_bar.update(1)
+                    else:
+                        # メモリ不足の場合、ディスクに保存
+                        async with aiofiles.open(file_path, 'wb') as f:
+                            await f.write(content)
+                            total_bytes_downloaded += file_size
+                            progress_bar.update(1)
+                        progress_bar.set_postfix({"status": "saved to disk"})
+                else:
+                    # ファイルが大きい場合はディスクに保存
+                    async with aiofiles.open(file_path, 'wb') as f:
+                        await f.write(content)
+                        total_bytes_downloaded += file_size
+                        progress_bar.update(1)
+                    progress_bar.set_postfix({"status": "saved to disk"})
             else:
                 print(f"Failed to download {url}, status code: {response.status}")
     except Exception as e:
         print(f"Error downloading {url}: {e}")
+
+# ファイル削除の非同期処理
+async def remove_downloaded_files():
+    for file_name in os.listdir(DOWNLOAD_DIR):
+        file_path = os.path.join(DOWNLOAD_DIR, file_name)
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
 async def main(url):
     global total_files_downloaded
@@ -68,18 +104,15 @@ async def main(url):
 
                 await asyncio.gather(*tasks)
 
+                # ダウンロードが完了したら並列でファイル削除を開始
+                await remove_downloaded_files()
+
         end_time = time.time()
         elapsed_time = end_time - start_time
         average_speed = 20 / elapsed_time if elapsed_time > 0 else 0
         print(f"20 files downloaded in {elapsed_time:.2f} seconds, average speed: {average_speed:.2f} files/second")
 
         total_files_downloaded += 20
-
-        # ダウンロードが完了したらファイルを削除
-        for file_name in os.listdir(DOWNLOAD_DIR):
-            file_path = os.path.join(DOWNLOAD_DIR, file_name)
-            if os.path.exists(file_path):
-                os.remove(file_path)
 
 def handle_exit(signum, frame):
     global total_files_downloaded, total_bytes_downloaded
