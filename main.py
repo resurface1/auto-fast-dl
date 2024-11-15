@@ -12,7 +12,7 @@ from typing import Optional
 from dataclasses import dataclass
 import gc
 
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 
 def print_banner():
     banner = """
@@ -58,24 +58,10 @@ def print_banner():
 @dataclass
 class DownloadStats:
     total_files: int = 0
+    failed_downloads: int = 0
     total_bytes: int = 0
     start_time: Optional[float] = None
-    
-import os
-import gc
-import uuid
-import time
-import psutil
-import asyncio
-import aiohttp
-import aiofiles
-from tqdm import tqdm
 
-class DownloadStats:
-    def __init__(self):
-        self.start_time = 0
-        self.total_bytes = 0
-        self.total_files = 0
 
 class DownloadManager:
     def __init__(self, download_dir: str = "downloads", max_memory_mb: int = 300):
@@ -88,19 +74,30 @@ class DownloadManager:
     def setup_download_dir(self):
         if not os.path.exists(self.download_dir):
             os.makedirs(self.download_dir)
-            
+
+    def cleanup_files(self):
+        """
+        ダウンロードしたファイルをクリーンアップするメソッド。
+        ダウンロードディレクトリ内のすべてのファイルを削除します。
+        """
+        for file_name in os.listdir(self.download_dir):
+            file_path = os.path.join(self.download_dir, file_name)
+            try:
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+            except Exception as e:
+                print(f"Error cleaning up {file_path}: {str(e)}")
+
     def check_memory_availability(self, batch_size: int, estimated_file_size_mb: float) -> bool:
         available_memory_mb = psutil.virtual_memory().available / (1024 * 1024)
         required_memory_mb = batch_size * estimated_file_size_mb
-        
         print(f"\nMemory Check:")
         print(f"╔════ Memory Analysis ════╗")
         print(f"║ Available Memory: {available_memory_mb:.1f} MB")
-        print(f"║ Required Memory: {required_memory_mb} MB")
+        print(f"║ Required Memory: {required_memory_mb:.1f} MB")
         print(f"║ Batch Size: {batch_size}")
         print(f"║ Est. File Size: {estimated_file_size_mb:.1f} MB")
         print(f"╚═══════════════════════╝\n")
-        
         return available_memory_mb >= required_memory_mb
 
     def _get_memory_usage_mb(self) -> float:
@@ -124,11 +121,12 @@ class DownloadManager:
             await f.write(content)
             
     async def download_file(self, session: aiohttp.ClientSession, url: str, 
-                          file_path: str, progress_bar: tqdm) -> bool:
+                            file_path: str, progress_bar: tqdm) -> bool:
         try:
             async with session.get(url) as response:
                 if response.status != 200:
                     print(f"Failed to download {url}, status code: {response.status}")
+                    self.stats.failed_downloads += 1
                     return False
                 
                 content = await response.read()
@@ -147,17 +145,27 @@ class DownloadManager:
                 
         except Exception as e:
             print(f"Error downloading {url}: {str(e)}")
+            self.stats.failed_downloads += 1
             return False
-        
-    def cleanup_files(self):
-        for file_name in os.listdir(self.download_dir):
-            file_path = os.path.join(self.download_dir, file_name)
-            try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-            except Exception as e:
-                print(f"Error cleaning up {file_path}: {str(e)}")
-                
+
+    def display_completion_banner(self):
+        gb_downloaded = self.stats.total_bytes / (1024 ** 3)
+        total_time = time.time() - self.stats.start_time
+        completion_banner = f"""
+\033[32m╔══════════════════ Download Complete ══════════════════╗
+║                                                      ║
+║  📊 Statistics:                                      ║
+║  ├─ Total Files: {self.stats.total_files:,d}                              ║
+║  ├─ Failed Downloads: {self.stats.failed_downloads:,d}                        ║
+║  ├─ Data Downloaded: {gb_downloaded:.2f} GB                              ║
+║  └─ Total Time: {total_time:.2f} seconds                                ║
+║                                                      ║
+║  🎉 Download Session Completed Successfully! 🎉       ║
+║                                                      ║
+╚══════════════════════════════════════════════════════╝\033[0m
+"""
+        print(completion_banner)
+
     async def start(self, url: str, batch_size: int = 20):
         if not url.startswith(('http://', 'https://')):
             print("Invalid URL. Please provide a URL that starts with 'http://' or 'https://'.")
@@ -182,6 +190,7 @@ class DownloadManager:
         
         self.stats.start_time = time.time()
         
+        # 無限ループにして、ctrl+C で停止するまで繰り返す
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=actual_batch_size)) as session:
             while True:
                 batch_start_time = time.time()
@@ -211,19 +220,26 @@ class DownloadManager:
                 self.cleanup_files()
                 gc.collect()
                 await asyncio.sleep(1)
+                
+                # break を削除し無限ループを維持
+                # Ctrl+C で停止する
+
+        self.display_completion_banner()
+
 
 def handle_exit(signum, frame, download_manager: DownloadManager):
     print("\nComplete!")
     print(f"Total files downloaded: {download_manager.stats.total_files}")
-    print(f"Total data downloaded: {download_manager.stats.total_bytes / (1024 * 1024 * 1024):.2f} GB")
+    print(f"Total data downloaded: {download_manager.stats.total_bytes / (1024 ** 3):.2f} GB")
     download_manager.cleanup_files()
+    download_manager.display_completion_banner()
     exit(0)
+
 
 if __name__ == "__main__":
     print_banner()
     download_manager = DownloadManager()
-    signal.signal(signal.SIGINT, 
-                 lambda s, f: handle_exit(s, f, download_manager))
+    signal.signal(signal.SIGINT, lambda s, f: handle_exit(s, f, download_manager))
     
     url = input("Enter the URL to download: ")
     asyncio.run(download_manager.start(url))
