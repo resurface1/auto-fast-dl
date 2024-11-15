@@ -1,5 +1,4 @@
 tqdm
 aiofiles
 aiohttp
-fake_useragent
 psutil
