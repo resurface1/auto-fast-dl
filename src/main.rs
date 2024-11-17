@@ -225,7 +225,9 @@ impl Downloader {
 
         let download_dir = self.download_dir.clone();
         let mut lock = self.stats.lock().await;
-        lock.start_time = Some(Utc::now().timestamp() as u64);
+        if lock.start_time.is_none() {
+            lock.start_time = Some(Utc::now().timestamp() as u64);
+        }
         drop(lock);
 
         let ctrl_c = tokio::signal::ctrl_c();
@@ -285,8 +287,6 @@ impl Downloader {
                 }
             }
         }
-
-        handle_exit(self).await;
 
         Ok(())
     }
@@ -357,18 +357,38 @@ fn print_banner() {
     println!("{}", text.yellow());
 }
 
+#[inline]
+fn input(prompt: &str) -> String {
+    print!("{}", prompt);
+    io::stdout().flush().unwrap();
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    input.trim().to_string()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     print_banner();
 
-    let downloader = Downloader::new(None, None);
 
-    print!("Enter the URL to download: ");
-    io::stdout().flush()?;
-    let mut url = String::new();
-    io::stdin().read_line(&mut url)?;
-    let url = url.trim();
+    let url = input("Enter the URL to download: ");
+    let batch_size = input("Enter the batch size (default: 20): ");
+    let thread_count = input("Enter the thread count (default: 1): ").parse::<usize>().unwrap_or(1);
 
-    downloader.start(url, None).await?;
+    let downloader = Arc::new(Downloader::new(None, None));
+
+    for _ in 0..thread_count {
+        let url = url.clone();
+        let batch_size = batch_size.clone();
+        let downloader = downloader.clone();
+        tokio::spawn(async move {
+            downloader.start(&url, batch_size.parse::<usize>().ok()).await.unwrap();
+        });
+    }
+
+    tokio::signal::ctrl_c().await.unwrap();
+
+    handle_exit(&downloader).await;
+
     Ok(())
 }
