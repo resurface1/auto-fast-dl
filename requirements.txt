@@ -1,4 +1,0 @@
-tqdm
-aiofiles
-aiohttp
-psutil

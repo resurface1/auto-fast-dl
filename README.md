@@ -1,2 +1,5 @@
 # auto-fast-dl
-ファイルを一気にdlして帯域幅をうおー
+
+Batch file downloader.
+
+This software is designed for educational purposes.
